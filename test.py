@@ -212,19 +212,16 @@ async def test_diff_apply_handles_flawed_and_fuzzy_diffs():
 
         read_submit = await client.call_tool("fz_file_read", {"path": "temp/src/components/buttons/SubmitButton.tsx"})
         assert read_submit.content[0].text == (
-            "[SYSTEM NOTICE: Automatically resolved path 'temp/src/components/buttons/SubmitButton.tsx' -> 'temp/src/components/buttons/SubmitButton.tsx']\n\n"
             '// Submit Header\nexport const Submit = () => { console.log("Escaping \\"Test\\" \'Passed\'"); };\n// Footer\n'
         )
 
         read_abort = await client.call_tool("fz_file_read", {"path": "temp/src/components/buttons/AbortButton.tsx"})
         assert read_abort.content[0].text == (
-            "[SYSTEM NOTICE: Automatically resolved path 'temp/src/components/buttons/AbortButton.tsx' -> 'temp/src/components/buttons/AbortButton.tsx']\n\n"
             "// Abort Header\nexport const Abort = () => { alert('Fuzzy Char Fix!'); };\n// Footer\n"
         )
 
         read_apply = await client.call_tool("fz_file_read", {"path": "/temp/src/components/buttons/ApplyButton.tsx"})
         assert read_apply.content[0].text == (
-            "[SYSTEM NOTICE: Automatically resolved path '/temp/src/components/buttons/ApplyButton.tsx' -> 'temp/src/components/buttons/ApplyButton.tsx']\n\n"
             "// Apply Header\nexport const Apply = () => { return 'Offset Fixed!'; };\n// Footer\n"
         )
 
@@ -272,3 +269,54 @@ async def test_file_list_resolves_deceptive_paths():
 
         res_sub_typo5 = await client.call_tool("fz_file_list", {"path": "/temp/src~", "recursive": False})
         assert res_sub_typo5.content[0].text == expected_shallow_output
+
+@pytest.mark.anyio
+async def test_search_grep_finds_file_contents():
+    """Test 5: Verifies that fz_search_grep scans file text lines accurately."""
+    async with Client(SERVER_ROOT_URL) as client:
+        res_match = await client.call_tool("fz_search_grep", {"query": "fuzzy char fix"})
+        print(f"\n📢 Search Grep Query Response:\n{res_match.content[0].text}")
+        
+        expected_grep_string = "src/components/buttons/AbortButton.tsx:2: export const Abort = () => { alert('Fuzzy Char Fix!'); };"
+        assert res_match.content[0].text == expected_grep_string
+
+@pytest.mark.anyio
+async def test_file_search_finds_by_name_and_extension():
+    """Test 6: Verifies that fz_file_search locates paths recursively by extension."""
+    async with Client(SERVER_ROOT_URL) as client:
+        result = await client.call_tool("fz_file_search", {"query": "tsx"})
+        print(f"\n📢 File Search Raw Output:\n{result.content[0].text}")
+        
+        expected_search_output = (
+            "src/components/buttons/AbortButton.tsx\n"
+            "src/components/buttons/ApplyButton.tsx\n"
+            "src/components/buttons/SubmitButton.tsx"
+        )
+        assert result.content[0].text == expected_search_output
+
+@pytest.mark.anyio
+async def test_read_files_batch_and_fuzzy_resolution():
+    """
+    Test 7: Verifies that fz_read_files accepts multiple fuzzy path parameters,
+    resolves them individually, and returns a protocol-compliant list of TextContent blocks
+    matching the exact, real state of the sandbox file array.
+    """
+    async with Client(SERVER_ROOT_URL) as client:
+        test_paths = [
+            "temp/src/components/buttons/SubmitButton.tsx",
+            "temp~/src/components/buttons/AbortButton.tsx"
+        ]
+        
+        result = await client.call_tool("fz_read_files", {"paths": test_paths})
+        
+        assert result.content[0].text == (
+            "// Submit Header\n"
+            "export const Submit = () => { console.log(\"Escaping \\\"Test\\\" 'Passed'\"); };\n"
+            "// Footer\n"
+        )
+        
+        assert result.content[1].text == (
+            "// Abort Header\n"
+            "export const Abort = () => { alert('Fuzzy Char Fix!'); };\n"
+            "// Footer\n"
+        )

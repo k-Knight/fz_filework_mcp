@@ -6,6 +6,7 @@ An MCP server designed for local LLMs (like Qwen 2.5 Coder) running inside Cline
 - **Deep Typo Resolution:** Resolves folder and file path typos at any depth step-by-step (e.g., `src1/comp0nents/bttons/` -> `src/components/buttons/`).
 - **Resilient Diff Patching:** Uses a compiled Rust engine (`mpatch`) with an aggressive fuzz threshold (`0.5`) to force messy, malformed AI diffs to merge cleanly.
 - **Clean File Listings:** Outputs flat, sorted file trees matching Linux `find` command syntax without leading `./` noise.
+- **Pre-Tool-Use Hook:** Includes a pre-execution hook infrastructure for Cline to dramatically improve tool-use reliability and validation before commands fire.
 
 ## Tools Included
 1. `fz_file_list(path, recursive)` – Returns clean file paths, skipping noise directories.
@@ -27,19 +28,28 @@ pip install mcp[cli] pydantic mpatch pytest
 {
   "mcpServers": {
     "fuzzy-patcher-service": {
-      "type": "streamable-http",
+      "type": "streamableHttp",
       "url": "http://localhost:15432/mcp",
       "disabled": false,
       "alwaysAllow": [
         "fz_file_read",
         "fz_file_touch",
         "fz_file_diff_apply",
-        "fz_file_list"
+        "fz_file_list",
+        "fz_search_grep",
+        "fz_file_search",
+        "fz_read_files"
       ]
     }
   }
 }
 ```
+
+### 3. Cline Pre-Tool-Use Hook Setup
+To ensure strict tool validation and enhance reliability, add the Pre-Tool-Use hooks located in `tool_use_rules/cline/`. 
+- **PowerShell Wrapper:** `tool_use_rules/cline/PreToolUse.ps1`
+- **Python Execution Engine:** `tool_use_rules/cline/pre_tool_use.py`
+- **Rule Definitions:** `tool_use_rules/cline/tool_use_rules.md`
 
 ---
 

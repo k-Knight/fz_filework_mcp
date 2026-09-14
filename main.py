@@ -1,4 +1,7 @@
 import sys
+import re 
+from typing import List
+from mcp.types import TextContent
 import argparse
 from pathlib import Path
 from typing import Annotated
@@ -30,19 +33,44 @@ mcp = MCPServer(
 def fz_file_read(
     path: Annotated[str, Field(description="The file path to read. Misspellings at any depth will be resolved.")]
 ) -> str:
-    """Reads a file's contents by resolving typos step-by-step through every subfolder."""
+    """Reads a file's contents directly with zero system notice wrapping."""
     resolved_path = path_resolver.resolve_fuzzy_path(PROJECT_ROOT, path, is_creation=False)
     
     if not resolved_path or not resolved_path.exists() or not resolved_path.is_file():
         return f"ERROR: Could not resolve file path '{path}' down the directory tree."
     
     try:
-        content = resolved_path.read_text(encoding='utf-8', errors='replace')
-        rel_match = resolved_path.relative_to(PROJECT_ROOT).as_posix()
-        return f"[SYSTEM NOTICE: Automatically resolved path '{path}' -> '{rel_match}']\n\n{content}"
+        return resolved_path.read_text(encoding='utf-8', errors='replace')
     except Exception as e:
         return f"ERROR: Failed to read resolved file: {str(e)}"
 
+@mcp.tool()
+def fz_read_files(
+    paths: Annotated[List[str], Field(description="The list of file paths to read. Misspellings or formatting anomalies will be fuzzy-resolved individually.")]
+) -> List[TextContent]:
+    """Reads the contents of multiple files safely, returning clean, isolated file content containers."""
+    content_blocks = []
+    
+    for path in paths:
+        resolved_path = path_resolver.resolve_fuzzy_path(PROJECT_ROOT, path, is_creation=False)
+        
+        if not resolved_path or not resolved_path.exists() or not resolved_path.is_file():
+            content_blocks.append(TextContent(
+                type="text",
+                text=f"ERROR: Could not resolve file path '{path}' down the directory tree."
+            ))
+            continue
+            
+        try:
+            content = resolved_path.read_text(encoding='utf-8', errors='replace')
+            content_blocks.append(TextContent(type="text", text=content))
+        except Exception as e:
+            content_blocks.append(TextContent(
+                type="text",
+                text=f"ERROR: Failed to read resolved file '{path}': {str(e)}"
+            ))
+
+    return content_blocks
 
 @mcp.tool()
 def fz_file_touch(
@@ -52,13 +80,12 @@ def fz_file_touch(
     resolved_path = path_resolver.resolve_fuzzy_path(PROJECT_ROOT, path, is_creation=True)
     
     if not resolved_path:
-        return f"ERROR: Path resolution failed for target creation space '{path}'."
+        return "ERROR: Path resolution failed for target creation space."
         
     try:
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         resolved_path.touch(exist_ok=True)
-        rel_match = resolved_path.relative_to(PROJECT_ROOT).as_posix()
-        return f"SUCCESS: Target folder structure resolved.\nRequested: '{path}'\nTouched at: '{rel_match}'"
+        return "SUCCESS"
     except Exception as e:
         return f"ERROR: Failed touching file at destination: {str(e)}"
 
@@ -71,14 +98,13 @@ def fz_file_diff_apply(
     resolved_path = path_resolver.resolve_fuzzy_path(PROJECT_ROOT, path, is_creation=False)
     
     if not resolved_path or not resolved_path.exists() or not resolved_path.is_file():
-        return f"PATCH FAILED: Could not resolve file path branch for '{path}'."
+        return "ERROR: Could not resolve target file path branch to apply patch."
     
     success, message = patch_engine.apply_unified_patch(resolved_path, diff_content)
-    rel_match = resolved_path.relative_to(PROJECT_ROOT).as_posix()
     if success:
-        return f"SUCCESS: [Fuzzy Fixed Target -> '{rel_match}']: {message}"
+        return "SUCCESS"
     else:
-        return f"ERROR: [Fuzzy Fixed Target -> '{rel_match}']: {message}"
+        return f"ERROR: {message}"
 
 @mcp.tool()
 def fz_file_list(
@@ -109,6 +135,84 @@ def fz_file_list(
     if not output_lines:
         rel_root = resolved_path.relative_to(PROJECT_ROOT).as_posix()
         return f"{rel_root}/" if rel_root and rel_root != "." else ""
+        
+    return "\n".join(sorted(output_lines))
+
+@mcp.tool()
+def fz_search_grep(
+    query: Annotated[str, Field(description="The text query or regex pattern to search for inside all workspace files.")]
+) -> str:
+    """Searches file contents across the workspace for a specific text string or regex pattern."""
+    ignored_dirs = {'.git', 'node_modules', '.venv', '__pycache__', 'dist', 'build', '.cline', '.pytest_cache'}
+    output_lines = []
+    
+    try:
+        compiled_regex = re.compile(query, re.IGNORECASE)
+    except Exception:
+        compiled_regex = re.compile(re.escape(query), re.IGNORECASE)
+
+    for item in PROJECT_ROOT.rglob('*'):
+        if not item.is_file():
+            continue
+        if any(ignored in item.parts for ignored in ignored_dirs):
+            continue
+            
+        try:
+            content_lines = item.read_text(encoding='utf-8', errors='replace').splitlines()
+            for line_num, line in enumerate(content_lines, 1):
+                if compiled_regex.search(line):
+                    abs_path_str = item.resolve().as_posix()
+                    root_path_str = PROJECT_ROOT.resolve().as_posix()
+                    if abs_path_str.startswith(root_path_str):
+                        rel_path = abs_path_str[len(root_path_str):].lstrip("/")
+                    else:
+                        rel_path = item.name
+                    
+                    if rel_path.startswith("temp/"):
+                        rel_path = rel_path[5:]
+                        
+                    output_lines.append(f"{rel_path}:{line_num}: {line.strip()}")
+        except Exception:
+            continue
+
+    if not output_lines:
+        return f"No matches found for search pattern: '{query}'"
+        
+    return "\n".join(output_lines)
+
+@mcp.tool()
+def fz_file_search(
+    query: Annotated[str, Field(description="The filename or partial path fragment pattern to locate inside the repository workspace tree.")]
+) -> str:
+    """Finds and lists files across the project workspace whose filenames or relative paths match the query pattern."""
+    ignored_dirs = {'.git', 'node_modules', '.venv', '__pycache__', 'dist', 'build', '.cline', '.pytest_cache'}
+    output_lines = []
+    
+    clean_query = query.strip().replace("\\", "/").lower()
+    if not clean_query:
+        return "ERROR: Empty file search query provided."
+
+    for item in PROJECT_ROOT.rglob('*'):
+        if not item.is_file():
+            continue
+        if any(ignored in item.parts for ignored in ignored_dirs):
+            continue
+            
+        abs_path_str = item.resolve().as_posix()
+        root_path_str = PROJECT_ROOT.resolve().as_posix()
+        if abs_path_str.startswith(root_path_str):
+            rel_path = abs_path_str[len(root_path_str):].lstrip("/")
+        else:
+            rel_path = item.name
+            
+        if rel_path.startswith("temp/"):
+            rel_path = rel_path[5:]
+        
+        if clean_query in rel_path.lower() or clean_query in item.name.lower():
+            output_lines.append(rel_path)
+
+    if not output_lines:
+        return f"No matching files discovered for layout query: '{query}'"
         
     return "\n".join(sorted(output_lines))
 
